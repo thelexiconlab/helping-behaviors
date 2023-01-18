@@ -1,0 +1,29 @@
+---
+title: "data-cleaning"
+output: html_document
+date: '2022-06-13'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+setwd(here::here())
+```
+
+```{r}
+gameIDs = paste(getwd(), "/e1 data/", sep = "")
+game_data <- list.files(path =gameIDs, pattern = "*.csv", full.names = TRUE) %>% 
+  lapply(read_csv,  col_types = cols( .default = col_character())) %>% 
+  bind_rows %>%
+  filter(!(is.na(helperRandCode)  | is.na(architectRandCode)))%>%
+  select(helperRandCode, architectRandCode) %>% distinct() %>%
+  pivot_longer(names_to = "role", cols = helperRandCode:architectRandCode)
+
+mturkIDs = paste(getwd(), "/e1 IDs/", sep = "") 
+mturk_data <- list.files(path =mturkIDs, pattern = "*.csv", full.names = TRUE) %>% 
+  lapply(read_csv,  col_types = cols( .default = col_character())) %>% 
+  bind_rows %>%
+  select(workerid) %>% distinct()
+
+```
+

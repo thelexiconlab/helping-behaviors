@@ -1,0 +1,583 @@
+---
+title: "cogsci-2023"
+output: html_document
+date: "2023-01-02"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(ggthemes)
+setwd("~/assistance-games-ToM")
+```
+
+# basic demographics + exclusions
+
+## demographics
+
+```{r}
+demo_path = paste(getwd(), "/e1 demo/", sep = "")
+demo_data <- list.files(path =demo_path, pattern = "*.csv", full.names = TRUE) %>% 
+  lapply(read_csv,  col_types = cols( .default = col_character())) %>% 
+  bind_rows  %>%
+  mutate(age = as.numeric(age),
+         gender = toupper(substr(gender, 0,5))) %>%
+  pivot_longer(names_to = "race", cols = hawaii:no) %>%
+  mutate(value = as.numeric(value))
+
+race_count = demo_data %>%
+  group_by(race) %>%
+  summarise_at(vars(value), sum)
+
+range(demo_data$age)
+mean(demo_data$age)
+sd(demo_data$age)
+
+gender_count = demo_data %>%
+  select(-c(race, value))%>% distinct()%>%
+  group_by(gender) %>%
+  tally()
+
+```
+
+## exclusions
+
+```{r}
+m = read_csv("e1 results/final_tracker.csv")%>% distinct() %>%
+  rename(min_moves = optimal_moves)
+
+completed = m %>% group_by(ID, goal_number) %>% 
+  summarise(n = n()) %>% group_by(ID) %>%
+  summarise(total_goals = n())%>%
+  filter( total_goals == 10)
+
+## total number of moves 
+
+total_moves = m %>% group_by(ID, goal, min_moves) %>% 
+  summarise(count = n()) %>% 
+  mutate(exceed = ifelse(count > 2.5*min_moves, 1, 0)) %>%
+  filter(exceed == 1)
+
+## remove all goals where this is the case
+
+m = m %>% filter(ID %in% (completed %>% pull(ID))) %>%
+  filter(! (ID %in% (total_moves %>% pull(ID)) & goal %in% (total_moves %>% pull(goal))))
+
+moremoves_IDs = total_moves %>%
+  group_by(ID) %>%
+  summarise_at(vars(exceed ), sum) %>% 
+  filter(exceed >2)
+# remove all IDs where exceed > 2
+m = m %>% filter(! ID %in% (moremoves_IDs %>% pull(ID)))
+
+## final N
+length(m %>% pull(ID) %>% unique()) # 80
+finalIDs = m %>% pull(ID) %>% unique()
+
+```
+
+# behavioral
+
+## types of moves
+
+```{r}
+m = m %>% mutate(move_type = ifelse(move_utility == -1, "harmful", 
+                                    ifelse(move_utility == 1, "useful", 
+                                           ifelse(move == "pass", "pass", "inconsequential"))))
+
+id_percent = m %>% 
+  group_by(ID, role, goal_type, move_type) %>%
+  summarise(count = n()) %>%
+  group_by(ID, role, move_type) %>%
+  summarise(ci = list(mean_cl_boot(count) %>% 
+                        rename(mean=y, lwr=ymin, upr=ymax))) %>% unnest%>%
+  mutate(percent = round(mean / sum(mean), 3),
+         per_lower = round(lwr / sum(lwr), 3),
+         per_upr = round(upr / sum(upr), 3))%>%
+  rename(`move type` = "move_type")
+
+```
+
+### architect
+```{r}
+m %>% 
+  group_by(ID, role, goal_type, move_type) %>%
+  summarise(count = n()) %>%
+  group_by(role, move_type) %>%
+  summarise(ci = list(mean_cl_boot(count) %>% 
+                        rename(mean=y, lwr=ymin, upr=ymax))) %>% unnest%>%
+  mutate(percent = round(mean / sum(mean), 3),
+         per_lower = round(lwr / sum(lwr), 3),
+         per_upr = round(upr / sum(upr), 3))%>%
+  rename(`move type` = "move_type")%>%
+  filter(role == "architect") %>%
+  ggplot(aes(x= `move type`, y = percent, group = `move type`, fill =`move type`)) +
+geom_bar(stat = "identity", position = "dodge", width = 0.7, color = "gray24")+
+  geom_point(data = id_percent %>% filter(role == "architect"), aes(x = `move type`, y = percent, 
+                                    group = `move type`, fill =`move type`),
+             shape = 21, position = position_jitterdodge(jitter.width = 0.1),
+             alpha = 0.3)+
+  geom_errorbar(aes(ymin=per_lower, ymax=per_upr), size = 0.5, width=.15, 
+                color = "black", position = position_dodge(0.70))+
+  labs(y = "proportion of moves", title = "demonstrator moves")+
+  theme_clean()+
+  scale_fill_manual(values = c("darksalmon", "darkslategray4","darkolivegreen4"))+
+  theme(plot.background = element_rect(
+    color = "white"),
+    strip.text.x = element_text(size =rel(2)),
+        axis.text = element_text(size =rel(1.5)),
+        axis.title = element_text(size =rel(2)),
+        plot.title = element_text(hjust = .5, size = rel(1.5)),
+        legend.position = "none")
+
+## model 
+library(lme4)
+library(lmerTest)
+
+a_data_overall = m %>% filter(role == "architect") %>%
+  group_by(ID, move_type) %>%
+  summarise(count = n())
+
+  
+architect_moves_model = lm(data = a_data_overall, 
+                                   count ~ move_type)
+summary(architect_moves_model)
+car::Anova(architect_moves_model)
+
+# interactions with goal type
+
+a_data_goals = m %>% filter(role == "architect") %>%
+  group_by(ID, goal_type, move_type) %>%
+  summarise(count = n())
+
+architect_goals_model = lm(data = a_data_goals, 
+                                   count ~ goal_type*move_type)
+summary(architect_goals_model)
+car::Anova(architect_goals_model)
+
+  
+
+
+```
+### helper
+```{r}
+m %>% 
+  group_by(ID, role, goal_type, move_type) %>%
+  summarise(count = n()) %>%
+  group_by(role, move_type) %>%
+  summarise(ci = list(mean_cl_boot(count) %>% 
+                        rename(mean=y, lwr=ymin, upr=ymax))) %>% unnest%>%
+  mutate(percent = round(mean / sum(mean), 3),
+         per_lower = round(lwr / sum(lwr), 3),
+         per_upr = round(upr / sum(upr), 3))%>%
+  rename(`move type` = "move_type")%>%
+  filter(role == "helper") %>%
+  ggplot(aes(x= `move type`, y = percent, group = `move type`, fill =`move type`)) +
+geom_bar(stat = "identity", position = "dodge", width = 0.7, color = "gray24")+
+  geom_point(data = id_percent, aes(x = `move type`, y = percent, 
+                                    group = `move type`, fill =`move type`),
+             shape = 21, position = position_jitterdodge(jitter.width = 0.1),
+             alpha = 0.3)+
+  geom_errorbar(aes(ymin=per_lower, ymax=per_upr), size = 0.5, width=.15, 
+                color = "black", position = position_dodge(0.70))+
+  labs(y = "proportion of moves", title = "helper moves")+
+  theme_clean()+
+  scale_fill_manual(values = c("darksalmon", "darkslategray4", "deeppink3","darkolivegreen4"))+
+  theme(plot.background = element_rect(
+    color = "white"),
+    strip.text.x = element_text(size =rel(2)),
+        axis.text = element_text(size =rel(1.5)),
+        axis.title = element_text(size =rel(2)),
+        plot.title = element_text(hjust = .5, size = rel(1.5)),
+        legend.position = "none")
+
+
+## model 
+library(lme4)
+library(lmerTest)
+
+h_data_overall = m %>% filter(role == "helper") %>%
+  group_by(ID, move_type) %>%
+  summarise(count = n())
+
+  
+h_moves_model = lm(data = h_data_overall, 
+                                   count ~ move_type)
+summary(h_moves_model)
+car::Anova(h_moves_model)
+
+# interactions with goal type
+
+a_data_goals = m %>% filter(role == "architect") %>%
+  group_by(ID, goal_type, move_type) %>%
+  summarise(count = n())
+
+architect_goals_model = lm(data = a_data_goals, 
+                                   count ~ goal_type*move_type)
+summary(architect_goals_model)
+car::Anova(architect_goals_model)
+
+```
+
+## first move analysis
+
+### plot
+
+```{r}
+first_move = read_csv("e1 results/final_first_moves.csv") %>%
+  separate(goal, into = c("goal_type", "n", "m"))%>%
+  mutate(goal_type = fct_relevel(goal_type, "move", "uncover", "cover", "fill", "clear"),
+         first_move_serves_goal = as.factor(first_move_serves_goal),
+         useful = ifelse(first_move_serves_goal == 1, 1, 0)) %>%
+  pivot_longer(names_to = "rank", cols=c(mean_random_samples_rank, first_move_rank))%>%
+  mutate(rank = fct_recode(rank, `random\nrank` = "mean_random_samples_rank", `empirical\nrank` = "first_move_rank"))
+
+#barplot
+
+first_move %>%
+  filter(first_move_serves_goal == 1)%>%
+  group_by(goal_type, rank)%>%
+  summarise(ci = list(mean_cl_boot(value) %>% 
+                        rename(mean=y, lwr=ymin, upr=ymax))) %>% unnest%>%
+  ggplot(aes(x= goal_type, y = mean, group = rank, fill = rank)) +
+geom_bar(stat = "identity", position = "dodge", width = 0.7)+
+    geom_errorbar(aes(ymin=lwr, ymax=upr), size = 0.5, width=.15, 
+                color = "black", position = position_dodge(0.70))+
+  labs(y = "mean rank of first move", title = "all first moves", x = "")+
+  theme_clean()+
+  theme(aspect.ratio = 1)+
+  scale_fill_tableau()+
+    theme(plot.background = element_rect(
+    color = "white"),
+    strip.text.x = element_text(size =rel(2)),
+        axis.text = element_text(size =rel(1.5)),
+        axis.title = element_text(size =rel(2)),
+        plot.title = element_text(hjust = .5, size = rel(1.5)))
+
+useful_data = first_move %>%
+  filter(first_move_serves_goal == 1)%>%
+  group_by(ID, rank)%>%
+  summarise(ci = list(mean_cl_boot(value) %>% 
+                        rename(mean=y, lwr=ymin, upr=ymax))) %>% unnest
+
+
+useful_moves = first_move %>%
+  filter(first_move_serves_goal == 1) %>%
+  group_by(rank)%>%
+  summarise(ci = list(mean_cl_boot(value) %>% 
+                        rename(mean=y, lwr=ymin, upr=ymax))) %>% unnest%>%
+  ggplot(aes(x= rank, y = mean, group = rank, fill = rank)) +
+geom_bar(stat = "identity", position = "dodge", width = 0.7)+
+  geom_point(data =useful_data, aes(x = rank, y = mean, 
+                                    group = rank, fill = rank),
+             shape = 21, position = position_jitterdodge(jitter.width = 0.1),
+             alpha = 0.3, color = "black")+
+    geom_errorbar(aes(ymin=lwr, ymax=upr), size = 0.5, width=.15, 
+                color = "black", position = position_dodge(0.70))+
+  labs(y = "mean rank of first move", title = "useful first moves", x = "")+
+  theme_clean()+
+  scale_fill_tableau()+
+    theme(plot.background = element_rect(
+    color = "white"),
+    strip.text.x = element_text(size =rel(2)),
+        axis.text = element_text(size =rel(1.5)),
+        axis.title = element_text(size =rel(2)),
+        plot.title = element_text(hjust = .5, size = rel(1.5)),
+        legend.position = "none")
+
+useful_moves
+
+gridExtra::grid.arrange(all_moves, useful_moves, nrow = 1)
+```
+
+### model
+```{r}
+
+useful_data_model = first_move %>%
+  filter(first_move_serves_goal == 1)
+
+first_move_model = lmer(data = useful_data_model, value ~ rank + (1|ID))
+summary(first_move_model)
+car::Anova(first_move_model)
+
+```
+
+## helper temporal
+
+```{r}
+move_temporal = m %>%
+  group_by(role, ID, move_id, move_type) %>%
+  count()
+
+# then we take the mean
+move_temporal %>%
+  group_by(role, move_id, move_type) %>%
+  summarise(ci = list(mean_cl_boot(n) %>% 
+                        rename(mean=y, lwr=ymin, upr=ymax))) %>% unnest%>%
+  mutate(percent = round(mean / sum(mean), 3),
+         per_lwr = round(lwr / sum(lwr), 3),
+         per_upr = round(upr / sum(upr), 3))%>%
+  filter(role == "helper" & move_id < 15)%>%
+  ggplot(aes(x= move_id, y = percent, group = move_type, color = move_type)) +
+scale_color_manual(values = c("darksalmon", "darkslategray4", "deeppink3","darkolivegreen4"))+
+geom_line(size = 1.5)+
+  geom_errorbar(aes(ymin=per_lwr, ymax=per_upr), size = 0.5, width=.15, 
+                color = "gray48", position = position_dodge(0.0))+
+    geom_point(size = 2,color = "black")+
+  labs(x = "move number", y = "mean proportion of moves", title = "temporal pattern of helper moves")+
+  theme_clean()+
+  theme(plot.background = element_rect(
+    color = "white"),
+    legend.text = element_text(size =rel(1.5)),
+    strip.text.x = element_text(size =rel(2)),
+        axis.text = element_text(size =rel(1.5)),
+        axis.title = element_text(size =rel(2)),
+        plot.title = element_text(hjust = .5, size = rel(1.5)))
+
+```
+
+
+# model ranks
+
+## architect 
+```{r}
+literal = read_csv("opt_results/arch_first_lit.csv") %>% rename(literal = "action_noise")
+pragmatic = read_csv("opt_results/arch_first_prag_all.csv")
+combined  = left_join(literal, pragmatic) %>% drop_na()
+write.csv(combined, file="opt_results/first_arch_optimized.csv", row.names = FALSE)
+```
+
+```{r}
+probs = read_csv("opt_results/first_optimized_probs.csv")%>%
+  mutate(literal_rank = len_literal - literal_better_than,
+         prag_rank = len_prag - prag_better_than,
+         pragmatic = ifelse(prag_rank < literal_rank, 1, 0)) %>%
+  filter(ID %in% finalIDs)
+  
+better = probs  %>%
+  rename(`baseline\ndemonstrator` = "literal_rank", 
+         `pragmatic\ndemonstrator` = "prag_rank") %>%
+  pivot_longer(names_to = "model", cols = c(`baseline\ndemonstrator`, `pragmatic\ndemonstrator`))%>%
+    filter(utility == 1)
+
+mean_better_df = better %>%
+  group_by(ID, model) %>%
+  summarise(mean_better = mean(value))%>%
+  filter(mean_better < 150)
+
+better %>% 
+  group_by(model) %>%
+  summarise(ci = list(mean_cl_boot(value) %>% 
+                        rename(mean=y, lwr=ymin, upr=ymax))) %>% unnest%>%
+  ggplot(aes(x= model, y = mean, group = model, fill = model)) +
+geom_bar(stat = "identity", position = "dodge", width = 0.7, color = "gray24")+
+  geom_point(data = mean_better_df, aes(x = model, y = mean_better),
+             shape = 21, position = position_jitterdodge(jitter.width = 0.1),
+             alpha = 0.5)+
+  geom_errorbar(aes(ymin=lwr, ymax=upr), size = 0.5, width=.05, 
+                color = "lightgray", position = position_dodge(0.70))+
+  labs(y = "mean rank", title = "demonstrator model ranks")+
+  theme_clean()+
+  #coord_cartesian(ylim = c(250, 290)) +
+  scale_fill_manual(values = c("darkorchid4", "cyan3"))+
+  theme(plot.background = element_rect(
+    color = "white"),
+    strip.text.x = element_text(size =rel(2)),
+        axis.text = element_text(size =rel(1.5)),
+        axis.title = element_text(size =rel(2)),
+        plot.title = element_text(hjust = .5, size = rel(1.5)),
+        legend.position = "none")
+
+better_model = lmerTest::lmer(data = better, value ~ model + (1| ID))
+summary(better_model)
+car::Anova(better_model)
+
+  
+```
+
+```{r}
+### helpers after useful/pragmatic moves?
+
+first_moves_only = m %>% select(ID, goal, goal_type, move_id, move, move_type) %>%
+  filter(move_id %in% c(0,1)) %>%
+  mutate(move_id = ifelse(move_id == 0, "demonstrator", "helper")) %>%
+  left_join(probs %>% rename(move = "first_move") %>% select(ID, goal, move, pragmatic))%>%
+  mutate(pragmatic = ifelse(is.na(pragmatic), 0 ,pragmatic),
+    move_type = ifelse(pragmatic == 1, "pragmatic", move_type)) %>% select(-c(pragmatic, move)) %>%
+  pivot_wider(names_from = move_id, values_from = move_type)
+
+first_moves_count = first_moves_only %>%
+  group_by(ID, demonstrator, helper) %>%
+  count()%>%
+  group_by(demonstrator, helper) %>%
+  summarize(mean = mean(n))
+
+first_moves_count %>%
+  ggplot(aes(x= demonstrator, y = mean, group = helper, fill = helper)) +
+geom_bar(stat = "identity", position = "dodge", width = 0.7)+
+  labs(y = "mean rank of first move", title = "all first moves", x = "")+
+  theme_clean()+
+  theme(aspect.ratio = 1)+
+  scale_fill_tableau()+
+    theme(plot.background = element_rect(
+    color = "white"),
+    strip.text.x = element_text(size =rel(2)),
+        axis.text = element_text(size =rel(1.5)),
+        axis.title = element_text(size =rel(2)),
+        plot.title = element_text(hjust = .5, size = rel(1.5)))
+
+  
+```
+
+
+
+## helper
+
+```{r}
+helper_std = read_csv("opt_results/helper_first_std.csv") %>%
+  rename(std_goal_noise = "helper_goal_noise", std_action_noise = "helper_action_noise")
+helper_prob = read_csv("opt_results/helper_first_prob.csv")
+helper_combined  = left_join(helper_std,helper_prob) %>% drop_na()
+write.csv(helper_combined, file="opt_results/helper_secondmove_optimized.csv", row.names = FALSE)
+```
+
+```{r}
+helper_probs = read_csv("opt_results/second_optimized_probs.csv")%>%
+  mutate(std_rank = len_std - std_better_than,
+         prob_rank = len_prob - prob_better_than,
+         move_type = ifelse(utility == -1, "harmful", 
+                                    ifelse(utility == 1, "useful", 
+                    ifelse(first_helper_move == "pass", "pass", "inconsequential"))))%>%
+  filter(ID %in% finalIDs)
+  
+helper_better = helper_probs  %>%
+  rename(`standard\nhelper` = "std_rank", 
+         `probabilistic\nhelper` = "prob_rank") %>%
+  pivot_longer(names_to = "model", cols = c(`standard\nhelper`, `probabilistic\nhelper`))
+
+mean_better_df = helper_better %>%
+  group_by(ID, move_type, model) %>%
+  summarise(mean_better = mean(value))
+
+helper_better %>% 
+  group_by(move_type, model) %>%
+  summarise(ci = list(mean_cl_boot(value) %>% 
+                        rename(mean=y, lwr=ymin, upr=ymax))) %>% unnest%>%
+  ggplot(aes(x= model, y = mean, group = move_type, fill = move_type)) +
+geom_bar(stat = "identity", position = "dodge", width = 0.7, color = "gray24")+
+  # geom_point(data = mean_better_df, aes(x = model, y = mean_better, group = move_type, 
+  #                                       fill = move_type),
+  #            shape = 21, position = position_jitterdodge(jitter.width = 0.1),
+  #            alpha = 0.5)+
+  geom_errorbar(aes(ymin=lwr, ymax=upr), size = 0.5, width=.05, 
+                color = "black", position = position_dodge(0.70))+
+  labs(y = "mean rank", title = "helper model ranks")+
+  theme_clean()+
+  #coord_cartesian(ylim = c(250, 290)) +
+  scale_fill_manual(values = c("darksalmon", "darkslategray4", "deeppink3","darkolivegreen4"))+
+  theme(plot.background = element_rect(
+    color = "white"),
+    strip.text.x = element_text(size =rel(2)),
+        axis.text = element_text(size =rel(1.5)),
+        axis.title = element_text(size =rel(2)),
+        plot.title = element_text(hjust = .5, size = rel(1.5)),
+        legend.position = c(0.85,0.9))
+
+helper_better_model = lmerTest::lmer(data = helper_better, value ~ move_type*model + (1| ID))
+summary(helper_better_model)
+car::Anova(helper_better_model)
+
+```
+
+# model simulations
+
+```{r}
+simulations = read_csv("opt_results/final_simulations.csv") %>%
+  filter(ID %in% finalIDs)
+  
+```
+## architect 
+```{r}
+simulations %>% select(ID, goal, literal_utility, prag_utility) %>%
+  pivot_longer(names_to = "model", cols = literal_utility:prag_utility) %>%
+  mutate(move_type = ifelse(value == -1, "harmful", 
+                                    ifelse(value == 1, "useful","inconsequential"))) %>%
+  mutate(model = fct_recode(model, `baseline\ndemonstrator` = "literal_utility",
+                            `pragmatic\ndemonstrator`= "prag_utility")) %>%
+  group_by(ID, model, move_type) %>%
+  summarise(count = n()) %>%
+  group_by(model, move_type) %>%
+  summarise(ci = list(mean_cl_boot(count, na.rm = TRUE) %>% 
+                        rename(mean=y, lwr=ymin, upr=ymax))) %>% unnest %>%
+  mutate(lwr = ifelse(is.na(lwr),1, lwr),
+                      upr = ifelse(is.na(upr),1, upr))%>%
+  mutate(percent = round(mean / sum(mean, na.rm = TRUE), 3),
+         per_lower = round(lwr / sum(lwr, na.rm = TRUE), 3),
+         per_upr = round(upr / sum(upr, na.rm = TRUE), 3)) %>%
+  rename(`move type` = "move_type")%>%
+  ggplot(aes(x= model, y = percent, group = `move type`, fill =`move type`)) +
+geom_bar(stat = "identity", position = "dodge", width = 0.7, color = "gray24")+
+  # geom_point(data = id_percent %>% filter(role == "architect"), aes(x = `move type`, y = percent, 
+  #                                   group = `move type`, fill =`move type`),
+  #            shape = 21, position = position_jitterdodge(jitter.width = 0.1),
+  #            alpha = 0.3)+
+  geom_errorbar(aes(ymin=per_lower, ymax=per_upr), size = 0.5, width=.15, 
+                color = "black", position = position_dodge(0.70))+
+  labs(y = "proportion of moves", title = "simulated first demonstrator moves", x = "")+
+  theme_clean()+
+  scale_fill_manual(values = c("darksalmon", "darkslategray4","darkolivegreen4"))+
+  theme(plot.background = element_rect(
+    color = "white"),
+    strip.text.x = element_text(size =rel(2)),
+        axis.text = element_text(size =rel(1.5)),
+        axis.title = element_text(size =rel(2)),
+        plot.title = element_text(hjust = .5, size = rel(1.5)))
+```
+
+
+
+## helper
+```{r}  
+simulations %>% 
+  mutate(baseline_utility = ifelse(baseline_utility == -1, "harmful", 
+                                    ifelse(baseline_utility == 1, "useful",
+                            ifelse(baseline_move == "('none', 'none')", "pass", "inconsequential"))),
+         careful_utility = ifelse(careful_utility == -1, "harmful", 
+                                    ifelse(careful_utility == 1, "useful",
+                          ifelse(careful_move == "('none', 'none')", "pass", "inconsequential")))) %>%
+  select(ID, goal, baseline_utility, careful_utility) %>%
+  pivot_longer(names_to = "model", cols = baseline_utility:careful_utility) %>%
+  mutate(model = fct_recode(model, `baseline\nhelper` = "baseline_utility",
+                            `careful\nhelper`= "careful_utility")) %>%
+  rename(move_type = "value") %>%
+  group_by(ID, model, move_type) %>%
+  summarise(count = n()) %>%
+  group_by(model, move_type) %>%
+  summarise(ci = list(mean_cl_boot(count, na.rm = TRUE) %>% 
+                        rename(mean=y, lwr=ymin, upr=ymax))) %>% unnest %>%
+  mutate(percent = round(mean / sum(mean, na.rm = TRUE), 3),
+         per_lower = round(lwr / sum(lwr, na.rm = TRUE), 3),
+         per_upr = round(upr / sum(upr, na.rm = TRUE), 3)) %>%
+  rename(`move type` = "move_type")%>%
+  ggplot(aes(x= model, y = percent, group = `move type`, fill =`move type`)) +
+geom_bar(stat = "identity", position = "dodge", width = 0.7, color = "gray24")+
+  # geom_point(data = id_percent %>% filter(role == "architect"), aes(x = `move type`, y = percent, 
+  #                                   group = `move type`, fill =`move type`),
+  #            shape = 21, position = position_jitterdodge(jitter.width = 0.1),
+  #            alpha = 0.3)+
+  geom_errorbar(aes(ymin=per_lower, ymax=per_upr), size = 0.5, width=.15, 
+                color = "black", position = position_dodge(0.70))+
+  labs(y = "proportion of moves", title = "simulated helper first moves", x = "")+
+  theme_clean()+
+  scale_fill_manual(values = c("darksalmon", "darkslategray4", "deeppink3","darkolivegreen4"))+
+  theme(plot.background = element_rect(
+    color = "white"),
+    strip.text.x = element_text(size =rel(2)),
+        axis.text = element_text(size =rel(1.5)),
+        axis.title = element_text(size =rel(2)),
+        plot.title = element_text(hjust = .5, size = rel(1.5)))
+```
+
+
+
+
