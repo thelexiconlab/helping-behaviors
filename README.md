@@ -1,4 +1,4 @@
-# assistance-games
+# understanding helping behaviors
 
 Repository for storing data and analysis scripts for the helping behaviors project
 
