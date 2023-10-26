@@ -78,6 +78,18 @@ finalIDs = m %>% pull(ID) %>% unique()
 
 # behavioral
 
+## final_move_df
+
+```{r}
+moves = read_csv("e1 results/final_move_df.csv")%>% distinct()
+
+moves_excluded = moves %>% filter(ID %in% finalIDs)
+
+write.csv(moves_excluded, file = "e1 results/excluded_final_moves_df.csv", row.names = FALSE)
+
+```
+
+
 ## types of moves
 
 ```{r}
