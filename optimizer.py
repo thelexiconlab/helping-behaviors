@@ -437,7 +437,7 @@ class optimize:
                 #print("move=", move)
                 if i % 2 == 0:
                     # architect move
-                    move_probs, c  = architect.literal_architect_trial(currentConfig, goal, literalA_beta= beta[0], goalspace = goalspace)
+                    move_probs, c  = architect.literal_architect_trial(currentConfig, goal, literalA_beta= beta, goalspace = goalspace)
                     prob = move_probs[c.index(move)]
                     # now we add the probability to the nll
                     nll += -np.log(prob)
